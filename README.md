@@ -1,6 +1,12 @@
 # Ford Workshop Manual Arc Extractor
 
-Extracts files from Ford Workshop Manual `.arc` container files without requiring Ford's proprietary software. Handles both container formats (`BAY POD` and `POD BAY`) and decompresses all IDICOMP-compressed entries.
+Tools for extracting and locally serving content from Ford Workshop Manual `.arc` container files without requiring Ford's proprietary software. Handles both container formats (`BAY POD` and `POD BAY`) and decompresses all IDICOMP-compressed entries.
+
+## Important
+
+**This repository contains no manual data.** You must supply your own copy of the Ford Workshop Manual CD-ROM. These tools were developed and tested against the **2012–2014 Ford Workshop Manual** (primarily the S197 Mustang), and should work with other vehicles and model years covered by the same disc. Other releases of the Workshop Manual may use the same formats and work without modification, but have not been tested.
+
+The Ford Workshop Manual software and all service content remain the property of Ford Motor Company.
 
 ## Usage
 
