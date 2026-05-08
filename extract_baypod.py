@@ -118,13 +118,10 @@ def parse_idicomp(raw):
 
     Format: 9-byte magic, then one or more chunks. Each chunk is a 2-byte LE
     length followed by that many bytes. A zero-length chunk terminates the
-    sequence. Chunks are normally LZSS-compressed; chunks that fail LZSS
-    decompression (IndexError) are treated as raw data and appended directly.
-    This handles mixed files where the first chunk is compressed and subsequent
-    chunks contain incompressible binary data stored raw (e.g. large PDFs).
-
-    If the very first chunk fails LZSS, the entire payload starting at byte 11
-    is returned as raw (GIF/JPEG/PDF stored without any LZSS wrapping).
+    sequence. Chunks that decompress successfully via LZSS are concatenated;
+    chunks that raise IndexError are appended as raw bytes. This uniformly
+    handles text files (all chunks LZSS), large binary files (all chunks raw,
+    e.g. JPEG/GIF), and mixed files (first chunk LZSS, rest raw, e.g. PDFs).
     """
     if len(raw) < 11 or raw[:9] != IDICOMP_MAGIC:
         return None, None
@@ -143,10 +140,9 @@ def parse_idicomp(raw):
         try:
             total_out.extend(_decompress_idicomp(chunk))
         except IndexError:
-            if not total_out:
-                # First chunk failed: entire entry is raw (JPEG/GIF/PDF magic)
-                return raw[11:], type_flags
-            # Later chunk failed: stored raw, append directly and continue
+            # Chunk is not LZSS-compressed; store raw bytes directly.
+            # This covers both all-raw entries (JPEG/GIF) and mixed entries
+            # where only some chunks are compressed (large PDFs).
             total_out.extend(chunk)
         pos += pl
 
