@@ -322,6 +322,21 @@ def parse_arc(filepath):
             'file_size': file_size,
         })
 
+    # The file_size field is only 2 bytes (max 65535).  Files larger than
+    # 65535 bytes have their size stored mod 65536.  Detect this by sorting
+    # entries by data offset and computing the actual block size as the gap
+    # to the next block; if the gap exceeds the reported size by an exact
+    # multiple of 65536, correct file_size accordingly.
+    by_offset = sorted(
+        [e for e in entries if e['abs_data_off'] > 0],
+        key=lambda e: e['abs_data_off'],
+    )
+    for i, e in enumerate(by_offset):
+        next_off = by_offset[i + 1]['abs_data_off'] if i + 1 < len(by_offset) else len(data)
+        gap = next_off - e['abs_data_off']
+        if gap > e['file_size'] and (gap - e['file_size']) % 65536 == 0:
+            e['file_size'] = gap
+
     return data, entries
 
 
