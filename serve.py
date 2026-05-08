@@ -55,6 +55,165 @@ def file_url(full_path: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Arc catalogue: arc code → (label, alpha-index filename or None)
+# Wiring arcs (EE*) share the last two letters with their manual arc (SE*/SD*/SC*).
+# R* arcs are field service actions; they are grouped separately.
+# ---------------------------------------------------------------------------
+
+ARC_CATALOGUE = {
+    # Workshop manuals — vehicles
+    'SE2': ('2014 F-150',                        'SE2ALPHAINDEX.HTM'),
+    'SEB': ('2014 Mustang',                       'SEBALPHAINDEX.HTM'),
+    'SCA': ('2012–2014 Focus Electric',           None),
+    'SCY': ('2012–2014 Focus',                    None),
+    'SDS': ('2013–2014 Fusion',                   'SDSALPHAINDEX.HTM'),
+    'SDE': ('2013–2014 Fusion Hybrid/Energi',     'SDEALPHAINDEX.HTM'),
+    'SDG': ('2013–2014 C-MAX Hybrid/Energi',      'SDGALPHAINDEX.HTM'),
+    'SDL': ('2013–2014 MKZ',                      'SDLALPHAINDEX.HTM'),
+    'SDW': ('2013–2014 MKZ Hybrid',               'SDWALPHAINDEX.HTM'),
+    'SDZ': ('2013–2014 Escape',                   'SDZALPHAINDEX.HTM'),
+    'SED': ('2014 Flex',                          'SEDALPHAINDEX.HTM'),
+    'SEF': ('2014 Taurus / Police Interceptor Sedan', 'SEFALPHAINDEX.HTM'),
+    'SEH': ('2014 MKS',                           'SEHALPHAINDEX.HTM'),
+    'SEI': ('2014 F-53 Motorhome / F-59 Stripped Chassis', 'SEIALPHAINDEX.HTM'),
+    'SEJ': ('2014 Expedition / Navigator',        'SEJALPHAINDEX.HTM'),
+    'SEM': ('2014 E-Series',                      'SEMALPHAINDEX.HTM'),
+    'SEN': ('2014 Explorer / Police Interceptor Utility', 'SENALPHAINDEX.HTM'),
+    'SEO': ('2014 F-250/350/450/550 Super Duty',  'SEOALPHAINDEX.HTM'),
+    'SEP': ('2014 MKT',                           'SEPALPHAINDEX.HTM'),
+    'SER': ('2014 Fiesta',                        'SERALPHAINDEX.HTM'),
+    'SEV': ('2014 Edge / MKX',                    'SEVALPHAINDEX.HTM'),
+    # Specialty manuals
+    'SIB': ('Noise, Vibration & Harshness',       'SIBALPHAINDEX.HTM'),
+    'SIA': ('7.3L DI Turbo Diesel (1997–2015)',   None),
+    'VE2': ('Gasoline Engines Reference',         None),
+    'VEF': ('6.7L Diesel Reference',              None),
+    'VEM': ('Hybrid Reference',                   None),
+}
+
+# Wiring arc suffix → workshop arc suffix (EE* → SE*/SD*/SC*)
+WIRING_SUFFIX_MAP = {
+    '2': 'SE2',  # F-150
+    'A': 'SCA',  # Focus Electric
+    'B': 'SEB',  # Mustang
+    'D': 'SED',  # Flex
+    'F': 'SEF',  # Taurus
+    'G': 'SDG',  # C-MAX
+    'H': 'SEH',  # MKS
+    'J': 'SEJ',  # Expedition/Navigator
+    'K': 'SEK',  # (unknown)
+    'M': 'SEM',  # E-Series
+    'N': 'SEN',  # Explorer
+    'O': 'SEO',  # Super Duty
+    'P': 'SEP',  # MKT
+    'R': 'SER',  # Fiesta
+    'S': 'SDS',  # Fusion
+    'T': 'SDZ',  # Escape (best guess by process of elimination)
+    'V': 'SEV',  # Edge/MKX
+    'Y': 'SCY',  # Focus
+}
+
+
+def _build_home_page() -> str:
+    """Generate the vehicle navigation home page from present arc directories."""
+    # Group arcs into: manuals, wiring, recalls, other
+    present = set(_arc_dirs.keys())
+
+    # Build vehicle rows: each known manual arc + its wiring counterpart if present
+    suffix_to_wiring = {}  # manual-arc-suffix → wiring arc code
+    for ee_suffix, manual_arc in WIRING_SUFFIX_MAP.items():
+        wiring_arc = 'EE' + ee_suffix
+        if wiring_arc in present:
+            suffix_to_wiring[manual_arc] = wiring_arc
+
+    rows = []
+    for arc, (label, index_file) in ARC_CATALOGUE.items():
+        if arc not in present:
+            continue
+        if index_file:
+            full = os.path.join(EXTRACTED_DIR, arc, index_file)
+            if os.path.isfile(full):
+                manual_link = f'<a href="/{arc}/{index_file}">{label}</a>'
+            else:
+                manual_link = f'<a href="/{arc}/">{label}</a>'
+        else:
+            manual_link = f'<a href="/{arc}/">{label}</a>'
+
+        wiring_arc = suffix_to_wiring.get(arc)
+        if wiring_arc:
+            wiring_link = f'<a href="/{wiring_arc}/" class="sub">+ Wiring ({wiring_arc})</a>'
+        else:
+            wiring_link = ''
+
+        rows.append(f'<tr><td class="arc">{arc}</td>'
+                    f'<td>{manual_link}{(" &nbsp; " + wiring_link) if wiring_link else ""}</td></tr>')
+
+    # Recalls: group R* arcs
+    recall_arcs = sorted(a for a in present if a.startswith('R'))
+    recall_html = ''
+    if recall_arcs:
+        items = ''.join(
+            f'<li><a href="/{a}/">{a}</a></li>'
+            for a in recall_arcs
+        )
+        recall_html = f'<h2>Field Service Actions / Recalls</h2><ul class="recalls">{items}</ul>'
+
+    # EE* arcs not matched to any manual
+    unmatched_ee = sorted(
+        a for a in present
+        if a.startswith('EE') and a not in suffix_to_wiring.values()
+    )
+    unmatched_html = ''
+    if unmatched_ee:
+        items = ''.join(f'<li><a href="/{a}/">{a}</a></li>' for a in unmatched_ee)
+        unmatched_html = f'<h2>Wiring Diagram Arcs (unmatched)</h2><ul class="recalls">{items}</ul>'
+
+    table_rows = '\n'.join(rows) or '<tr><td colspan="2">No workshop manuals found.</td></tr>'
+
+    return f"""\
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Ford Workshop Manual</title>
+<style>
+  * {{ box-sizing: border-box; margin: 0; padding: 0; }}
+  body {{ font-family: Arial, sans-serif; background: #f4f4f4; color: #222; }}
+  header {{ background: #002060; color: #fff; padding: 16px 24px; }}
+  header h1 {{ font-size: 20px; font-weight: bold; letter-spacing: 1px; }}
+  header p {{ font-size: 12px; opacity: .7; margin-top: 4px; }}
+  main {{ padding: 24px; max-width: 900px; }}
+  h2 {{ font-size: 15px; color: #002060; margin: 24px 0 8px; border-bottom: 1px solid #ccc; padding-bottom: 4px; }}
+  table {{ border-collapse: collapse; width: 100%; background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,.1); }}
+  td {{ padding: 9px 14px; border-bottom: 1px solid #eee; font-size: 14px; vertical-align: middle; }}
+  td.arc {{ color: #888; font-family: monospace; font-size: 13px; width: 70px; }}
+  a {{ color: #003399; text-decoration: none; }}
+  a:hover {{ text-decoration: underline; }}
+  a.sub {{ color: #666; font-size: 12px; }}
+  ul.recalls {{ list-style: none; columns: 4; background: #fff; padding: 12px 16px;
+                box-shadow: 0 1px 3px rgba(0,0,0,.1); }}
+  ul.recalls li a {{ font-size: 12px; font-family: monospace; color: #555; }}
+  ul.recalls li a:hover {{ color: #003399; text-decoration: underline; }}
+</style>
+</head>
+<body>
+<header>
+  <h1>Ford Workshop Manual</h1>
+  <p>Offline service information &mdash; 2012&ndash;2014 model years</p>
+</header>
+<main>
+<h2>Workshop Manuals</h2>
+<table>
+{table_rows}
+</table>
+{unmatched_html}
+{recall_html}
+</main>
+</body>
+</html>"""
+
+
+# ---------------------------------------------------------------------------
 # HTML templates
 # ---------------------------------------------------------------------------
 
@@ -153,9 +312,9 @@ class Handler(BaseHTTPRequestHandler):
 
         rel = path.lstrip('/')
 
-        # Root → directory listing
+        # Root → vehicle navigation home page
         if rel == '':
-            self._serve_dir(EXTRACTED_DIR, '/')
+            self.send_html(_build_home_page())
             return
 
         # Try /ARC/filename  (keeps relative URLs working correctly)
