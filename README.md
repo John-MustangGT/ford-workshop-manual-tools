@@ -90,7 +90,7 @@ repo-root/
 - `/renderers/wiringsvg/ep_main.asp?CELL=<n>&book=<ARC>`  
   Looks up wiring SVG files by prefix `<book><CELL padded to 3 digits>`, e.g.
   `book=EEB&CELL=42` searches for `eeb042*.svg`, inlines the first match, and
-  links additional matching sheets.
+  links additional matching sheets. Filename matching is case-insensitive.
 
 ### Notes / limitations
 

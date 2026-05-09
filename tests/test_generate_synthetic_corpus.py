@@ -11,16 +11,24 @@ GENERATOR_PATH = REPO_ROOT / "scripts" / "generate_synthetic_corpus.py"
 
 
 spec = importlib.util.spec_from_file_location("generate_synthetic_corpus", GENERATOR_PATH)
-module = importlib.util.module_from_spec(spec)
-assert spec.loader is not None
-spec.loader.exec_module(module)
+
+
+def _load_generator_module():
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
 
 
 class SyntheticCorpusGeneratorTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.generator = _load_generator_module()
+
     def test_generator_writes_expected_layout(self):
         with tempfile.TemporaryDirectory() as td:
             out = Path(td)
-            module.generate_corpus(out)
+            self.generator.generate_corpus(out)
 
             self.assertTrue((out / "arcs" / "SEB.arc").is_file())
             self.assertTrue((out / "arcs" / "R98.arc").is_file())
@@ -33,7 +41,7 @@ class SyntheticCorpusGeneratorTests(unittest.TestCase):
     def test_generated_bay_pod_parses_and_contains_expected_payloads(self):
         with tempfile.TemporaryDirectory() as td:
             out = Path(td)
-            module.generate_corpus(out)
+            self.generator.generate_corpus(out)
 
             data, entries = parse_arc(str(out / "arcs" / "SEB.arc"))
             names = {entry["filename"] for entry in entries}
@@ -57,7 +65,7 @@ class SyntheticCorpusGeneratorTests(unittest.TestCase):
     def test_generated_pod_bay_parses_to_inferred_entries(self):
         with tempfile.TemporaryDirectory() as td:
             out = Path(td)
-            module.generate_corpus(out)
+            self.generator.generate_corpus(out)
 
             _, entries = parse_pod_bay(str(out / "arcs" / "R98.arc"))
             names = {entry["filename"] for entry in entries}
