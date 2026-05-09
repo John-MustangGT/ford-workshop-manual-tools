@@ -41,6 +41,89 @@ Each `.arc` file extracts into its own subdirectory named after the arc (e.g. `e
 
 ---
 
+## Local Web Server (`serve.py`)
+
+`serve.py` serves extracted files locally and emulates key Ford ASP routes so the
+manual can be browsed offline.
+
+### Start the server
+
+```bash
+# Default port: 8080
+python3 serve.py
+
+# Custom port
+python3 serve.py 9090
+```
+
+By default, the server expects `extracted/` beside `serve.py`:
+
+```text
+repo-root/
+  serve.py
+  extracted/
+    SEB/
+      SEBALPHAINDEX.HTM
+      ...
+    EEB/
+      EEB042001.SVG
+      ...
+```
+
+### Common URLs
+
+- Home page (generated from available arc folders):  
+  `http://localhost:8080/`
+- Manual entry point example:  
+  `http://localhost:8080/SEB/SEBALPHAINDEX.HTM`
+- Arc directory listing example:  
+  `http://localhost:8080/SEB/`
+- Bare filename lookup (redirects to matching arc file):  
+  `http://localhost:8080/SEBALPHAINDEX.HTM`
+
+### Emulated ASP endpoints
+
+- `/renderers/2colframeset.asp?leftside=...&rightside=...`
+- `/tpsasps/2colframeset.asp?leftside=...&rightside=...`  
+  Generates a simple two-column frameset from `leftside` and `rightside`.
+
+- `/renderers/wiringsvg/ep_main.asp?CELL=<n>&book=<ARC>`  
+  Looks up wiring SVG files by prefix `<book><CELL padded to 3 digits>`, e.g.
+  `book=EEB&CELL=42` searches for `eeb042*.svg`, inlines the first match, and
+  links additional matching sheets.
+
+### Notes / limitations
+
+- This is an offline compatibility server for extracted files, not a full Ford
+  application stack.
+- Behavior is focused on practical local browsing and route compatibility.
+- Content ownership remains with Ford Motor Company; this repository contains no
+  Ford workshop corpus data.
+
+---
+
+## Synthetic Test Corpus Generator
+
+To support safe regression testing without shipping Ford corpus content, this
+repository includes a synthetic corpus generator:
+
+```bash
+python3 scripts/generate_synthetic_corpus.py
+```
+
+Options:
+
+- `-o/--output` output directory (default: `testdata/synthetic_corpus`)
+- `--overwrite` replace an existing output directory
+
+Generated data is synthetic/non-proprietary and includes:
+
+- Tiny `BAY POD` and `POD BAY` sample archives
+- `IDICOMP` sample wrappers (chunked and raw passthrough-like signatures)
+- A minimal `extracted/` tree for local `serve.py` verification
+
+---
+
 ## Format Reference
 
 ### BAY POD Container (`.arc`)
