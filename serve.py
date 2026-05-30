@@ -292,11 +292,16 @@ class Handler(BaseHTTPRequestHandler):
     # --- response helpers ---
 
     def send_bytes(self, body: bytes, content_type: str, status: int = 200) -> None:
-        self.send_response(status)
-        self.send_header('Content-Type', content_type)
-        self.send_header('Content-Length', str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.send_response(status)
+            self.send_header('Content-Type', content_type)
+            self.send_header('Content-Length', str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError):
+            # Client closed the connection before receiving the full response.
+            # Treat this as a normal disconnect and suppress noisy tracebacks.
+            return
 
     def send_html(self, html: str, status: int = 200) -> None:
         self.send_bytes(html.encode('utf-8'), 'text/html; charset=utf-8', status)
