@@ -111,6 +111,44 @@ def _decompress_idicomp(data):
     return bytes(out)
 
 
+def _repair_raw_16k_stream(payload):
+    """Repair raw payloads containing 2-byte markers every 16KB.
+
+    Certain raw IDICOMP entries are stored as:
+      [16KB data][2-byte marker][16KB data][2-byte marker]... [tail][0x0000]
+    where marker bytes are framing, not file content.
+    """
+    block = 0x4000
+    if len(payload) <= block + 2 or payload[-2:] != b'\x00\x00':
+        return payload
+
+    out = bytearray()
+    pos = 0
+    markers_seen = 0
+
+    while pos < len(payload):
+        take = min(block, len(payload) - pos)
+        out.extend(payload[pos:pos + take])
+        pos += take
+
+        if take < block:
+            break
+        if pos + 2 > len(payload):
+            return payload
+
+        marker = payload[pos:pos + 2]
+        pos += 2
+        markers_seen += 1
+        if marker == b'\x00\x00':
+            break
+
+    if markers_seen == 0:
+        return payload
+    if out[-2:] == b'\x00\x00':
+        out = out[:-2]
+    return bytes(out)
+
+
 def parse_idicomp(raw):
     """Parse an IDICOMP-wrapped entry and return the decompressed payload.
 
@@ -140,6 +178,10 @@ def parse_idicomp(raw):
         try:
             total_out.extend(_decompress_idicomp(chunk))
         except IndexError:
+            if not total_out:
+                # Entire entry is raw. Start at byte 11 and repair optional
+                # 16KB inter-block framing markers when present.
+                return _repair_raw_16k_stream(raw[11:]), type_flags
             # Chunk is not LZSS-compressed; store raw bytes directly.
             # This covers both all-raw entries (JPEG/GIF) and mixed entries
             # where only some chunks are compressed (large PDFs).
@@ -148,6 +190,7 @@ def parse_idicomp(raw):
 
     if not total_out:
         return None, None
+
     return bytes(total_out), type_flags
 
 
