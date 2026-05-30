@@ -168,25 +168,38 @@ def parse_idicomp(raw):
 
     pos = 9
     total_out = bytearray()
+    pending_raw = None
 
     while pos + 1 < len(raw):
+        hdr = raw[pos:pos + 2]
         pl = raw[pos] + raw[pos + 1] * 256
         pos += 2
         if pl == 0:
             break
         chunk = raw[pos:pos + pl]
         try:
-            total_out.extend(_decompress_idicomp(chunk))
+            decompressed = _decompress_idicomp(chunk)
+            if pending_raw is not None:
+                total_out.extend(_repair_raw_16k_stream(bytes(pending_raw)))
+                pending_raw = None
+            total_out.extend(decompressed)
         except IndexError:
             if not total_out:
                 # Entire entry is raw. Start at byte 11 and repair optional
                 # 16KB inter-block framing markers when present.
                 return _repair_raw_16k_stream(raw[11:]), type_flags
-            # Chunk is not LZSS-compressed; store raw bytes directly.
-            # This covers both all-raw entries (JPEG/GIF) and mixed entries
-            # where only some chunks are compressed (large PDFs).
-            total_out.extend(chunk)
+            # Mixed entries can continue with multiple raw chunks. Stitch them
+            # into one raw stream so inter-chunk header words stay in place
+            # before removing 16KB framing markers.
+            if pending_raw is None:
+                pending_raw = bytearray(chunk)
+            else:
+                pending_raw.extend(hdr)
+                pending_raw.extend(chunk)
         pos += pl
+
+    if pending_raw is not None:
+        total_out.extend(_repair_raw_16k_stream(bytes(pending_raw)))
 
     if not total_out:
         return None, None
