@@ -15,4 +15,6 @@ Setup.ini
 setup.inx
 stock/
 tools/
+tmp/
+notes.txt
 volume.enc
