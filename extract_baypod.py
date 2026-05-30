@@ -36,6 +36,10 @@ import struct
 import os
 import sys
 import argparse
+import hashlib
+import csv
+import urllib.request
+import urllib.error
 
 MAGIC = b'BAY POD\x02'
 POD_BAY_MAGIC = b'POD BAY\x01'
@@ -144,9 +148,64 @@ def _repair_raw_16k_stream(payload):
 
     if markers_seen == 0:
         return payload
-    if out[-2:] == b'\x00\x00':
+    if len(out) >= 2 and out[-2:] == b'\x00\x00':
         out = out[:-2]
     return bytes(out)
+
+
+def _repair_raw_16k_stream_variant(payload, marker_bytes=2, require_tail=False, trim_tail=False):
+    """Repair a raw stream by dropping marker bytes at each 16KB boundary.
+
+    This is a diagnostic variant used for candidate extraction. It can run
+    without requiring a trailing 0x0000 marker and supports dropping 2 or 4
+    bytes per 16KB boundary.
+    """
+    block = 0x4000
+    if marker_bytes <= 0:
+        return payload
+    if len(payload) <= block + marker_bytes:
+        return payload
+    if require_tail and payload[-2:] != b'\x00\x00':
+        return payload
+
+    out = bytearray()
+    pos = 0
+    markers_seen = 0
+
+    while pos < len(payload):
+        take = min(block, len(payload) - pos)
+        out.extend(payload[pos:pos + take])
+        pos += take
+
+        if take < block:
+            break
+        if pos + marker_bytes > len(payload):
+            break
+
+        pos += marker_bytes
+        markers_seen += 1
+
+    if markers_seen == 0:
+        return payload
+    if trim_tail and out[-2:] == b'\x00\x00':
+        out = out[:-2]
+    return bytes(out)
+
+
+def _detect_pending_raw_marker_bytes(payload):
+    """Detect whether the framing separator in a pending_raw blob is 2 or 4 bytes.
+
+    When a mixed IDICOMP entry has raw chunks longer than one 16KB block, the
+    raw blob contains framing separator bytes at every 16KB position.  Most
+    entries use a 2-byte separator, but some use a 4-byte separator (the 2-byte
+    separator followed by an additional 2-byte \x00\x00 field).  Detect the
+    latter by checking whether the two bytes *immediately after* the first
+    separator position are \x00\x00.
+    """
+    block = 0x4000
+    if len(payload) <= block + 4:
+        return 2
+    return 4 if payload[block + 2:block + 4] == b'\x00\x00' else 2
 
 
 def parse_idicomp(raw):
@@ -180,14 +239,15 @@ def parse_idicomp(raw):
         try:
             decompressed = _decompress_idicomp(chunk)
             if pending_raw is not None:
-                total_out.extend(_repair_raw_16k_stream(bytes(pending_raw)))
+                _mb = _detect_pending_raw_marker_bytes(pending_raw)
+                total_out.extend(_repair_raw_16k_stream_variant(bytes(pending_raw), marker_bytes=_mb, require_tail=False, trim_tail=True))
                 pending_raw = None
             total_out.extend(decompressed)
         except IndexError:
             if not total_out:
                 # Entire entry is raw. Start at byte 11 and repair optional
                 # 16KB inter-block framing markers when present.
-                return _repair_raw_16k_stream(raw[11:]), type_flags
+                return _repair_raw_16k_stream_variant(bytes(raw[11:]), marker_bytes=2, require_tail=False, trim_tail=True), type_flags
             # Mixed entries can continue with multiple raw chunks. Stitch them
             # into one raw stream so inter-chunk header words stay in place
             # before removing 16KB framing markers.
@@ -199,12 +259,367 @@ def parse_idicomp(raw):
         pos += pl
 
     if pending_raw is not None:
-        total_out.extend(_repair_raw_16k_stream(bytes(pending_raw)))
+        _mb = _detect_pending_raw_marker_bytes(pending_raw)
+        total_out.extend(_repair_raw_16k_stream_variant(bytes(pending_raw), marker_bytes=_mb, require_tail=False, trim_tail=True))
 
     if not total_out:
         return None, None
 
     return bytes(total_out), type_flags
+
+
+def _parse_idicomp_mixed_raw(raw, include_first_raw_hdr=False, repair_func=None):
+    """Parse IDICOMP with tunable mixed-raw handling for diagnostics."""
+    if len(raw) < 11 or raw[:9] != IDICOMP_MAGIC:
+        return None, None
+
+    type_flags = (raw[11] + raw[12] * 256) if len(raw) >= 13 else 0
+
+    pos = 9
+    total_out = bytearray()
+    pending_raw = None
+
+    while pos + 1 < len(raw):
+        hdr = raw[pos:pos + 2]
+        pl = raw[pos] + raw[pos + 1] * 256
+        pos += 2
+        if pl == 0:
+            break
+
+        chunk = raw[pos:pos + pl]
+        try:
+            decompressed = _decompress_idicomp(chunk)
+            if pending_raw is not None:
+                if repair_func is None:
+                    total_out.extend(bytes(pending_raw))
+                else:
+                    total_out.extend(repair_func(bytes(pending_raw)))
+                pending_raw = None
+            total_out.extend(decompressed)
+        except IndexError:
+            if not total_out:
+                # All-raw entry: apply the caller-supplied repair_func so that
+                # candidate variants are actually distinct for these entries.
+                repair = repair_func if repair_func is not None else _repair_raw_16k_stream
+                return repair(raw[11:]), type_flags
+            if pending_raw is None:
+                pending_raw = bytearray()
+                if include_first_raw_hdr:
+                    pending_raw.extend(hdr)
+                pending_raw.extend(chunk)
+            else:
+                pending_raw.extend(hdr)
+                pending_raw.extend(chunk)
+        pos += pl
+
+    if pending_raw is not None:
+        if repair_func is None:
+            total_out.extend(bytes(pending_raw))
+        else:
+            total_out.extend(repair_func(bytes(pending_raw)))
+
+    if not total_out:
+        return None, None
+
+    return bytes(total_out), type_flags
+
+
+def _candidate_payloads_from_raw(raw):
+    """Build de-duplicated decode candidates for one raw IDICOMP entry."""
+    candidates = []
+
+    default_payload, _ = parse_idicomp(raw)
+    if default_payload is None:
+        default_payload = raw
+    candidates.append(('default', default_payload))
+
+    variants = [
+        (
+            'mixed_no_repair',
+            False,
+            None,
+        ),
+        (
+            'mixed_drop2_relaxed',
+            False,
+            lambda b: _repair_raw_16k_stream_variant(b, marker_bytes=2, require_tail=False, trim_tail=False),
+        ),
+        (
+            'mixed_drop2_relaxed_trim',
+            False,
+            lambda b: _repair_raw_16k_stream_variant(b, marker_bytes=2, require_tail=False, trim_tail=True),
+        ),
+        (
+            'mixed_drop4_relaxed',
+            False,
+            lambda b: _repair_raw_16k_stream_variant(b, marker_bytes=4, require_tail=False, trim_tail=False),
+        ),
+        (
+            'mixed_drop4_relaxed_trim',
+            False,
+            lambda b: _repair_raw_16k_stream_variant(b, marker_bytes=4, require_tail=False, trim_tail=True),
+        ),
+        (
+            'mixed_with_hdr_drop2_relaxed',
+            True,
+            lambda b: _repair_raw_16k_stream_variant(b, marker_bytes=2, require_tail=False, trim_tail=False),
+        ),
+        (
+            'mixed_with_hdr_no_repair',
+            True,
+            None,
+        ),
+    ]
+
+    for name, include_hdr, repair_func in variants:
+        payload, _ = _parse_idicomp_mixed_raw(raw, include_first_raw_hdr=include_hdr, repair_func=repair_func)
+        if payload:
+            candidates.append((name, payload))
+
+    uniq = []
+    seen = set()
+    for variant, payload in candidates:
+        digest = hashlib.sha256(payload).hexdigest()
+        if digest in seen:
+            continue
+        seen.add(digest)
+        uniq.append((variant, payload, digest))
+    return uniq
+
+
+def extract_entry_candidates(data, entry, output_dir, verbose=False):
+    """Write multiple decode candidates for one entry to help diagnose issues."""
+    filename = entry['filename']
+    abs_off = entry['abs_data_off']
+    size = entry['file_size']
+
+    if abs_off == 0 or size == 0:
+        return []
+
+    raw = data[abs_off:abs_off + size]
+    if not raw:
+        return []
+
+    uniq = _candidate_payloads_from_raw(raw)
+
+    os.makedirs(output_dir, exist_ok=True)
+    stem, ext = os.path.splitext(filename)
+    written = []
+    for variant, payload, digest in uniq:
+        out_name = f'{stem}__{variant}{ext}'
+        out_path = os.path.join(output_dir, out_name)
+        with open(out_path, 'wb') as f:
+            f.write(payload)
+        written.append((variant, out_path, len(payload), digest))
+        if verbose:
+            print(f'  CANDIDATE: {os.path.basename(out_path)} ({len(payload)} bytes) sha256={digest}')
+
+    return written
+
+
+def probe_file_candidates(arc_files, target_name, output_dir, verbose=False):
+    """Extract candidate decodes for one file name from matching arc entries."""
+    target_lower = target_name.lower()
+    total_written = 0
+    matched_any = False
+
+    for arc_path in arc_files:
+        try:
+            with open(arc_path, 'rb') as f:
+                magic = f.read(8)
+            if magic == POD_BAY_MAGIC:
+                data, entries = parse_pod_bay(arc_path)
+            elif magic.startswith(MAGIC):
+                data, entries = parse_arc(arc_path)
+            else:
+                continue
+        except Exception as e:
+            print(f'  ERROR reading {arc_path}: {e}')
+            continue
+
+        arc_name = os.path.splitext(os.path.basename(arc_path))[0]
+        for entry in entries:
+            if entry['filename'].lower() != target_lower:
+                continue
+            matched_any = True
+            print(f'\nProbing {entry["filename"]} in {arc_name}.arc')
+            arc_out = os.path.join(output_dir, arc_name)
+            written = extract_entry_candidates(data, entry, arc_out, verbose=verbose)
+            if not written:
+                print('  No candidates produced')
+                continue
+            total_written += len(written)
+            for variant, out_path, nbytes, digest in written:
+                print(f'  {variant:28s} {nbytes:8d} bytes  sha256={digest}')
+
+    if not matched_any:
+        print(f'No matching file found for: {target_name}')
+        return 1
+
+    print(f'\nCandidate probe complete: {total_written} files written under {output_dir}')
+    return 0
+
+
+def _score_candidate(payload, remote):
+    m = min(len(payload), len(remote))
+    first_diff = None
+    for i in range(m):
+        if payload[i] != remote[i]:
+            first_diff = i
+            break
+    prefix_match = m if first_diff is None else first_diff
+    exact_match = payload == remote
+    return prefix_match, first_diff, exact_match
+
+
+def probe_score_csv(arc_files, report_csv, output_csv, limit=None):
+    """Score candidate decodes for mismatches listed in a prior report CSV."""
+    try:
+        with open(report_csv, newline='') as f:
+            rows = [r for r in csv.DictReader(f) if r.get('status') == 'mismatch']
+    except Exception as e:
+        print(f'ERROR reading report CSV: {e}')
+        return 1
+
+    if limit is not None:
+        rows = rows[:limit]
+    if not rows:
+        print('No mismatch rows found in report CSV.')
+        return 1
+
+    target_names = {r['filename'].lower() for r in rows if r.get('filename')}
+
+    # Build index for needed entries across provided arc files.
+    entry_index = {}
+    for arc_path in arc_files:
+        try:
+            with open(arc_path, 'rb') as f:
+                magic = f.read(8)
+            if magic == POD_BAY_MAGIC:
+                data, entries = parse_pod_bay(arc_path)
+            elif magic.startswith(MAGIC):
+                data, entries = parse_arc(arc_path)
+            else:
+                continue
+        except Exception as e:
+            print(f'  ERROR reading {arc_path}: {e}')
+            continue
+
+        arc_name = os.path.splitext(os.path.basename(arc_path))[0]
+        for entry in entries:
+            key = entry['filename'].lower()
+            if key not in target_names:
+                continue
+            if key not in entry_index:
+                entry_index[key] = (arc_name, data, entry)
+
+    out_rows = []
+    processed = 0
+    for r in rows:
+        name = r.get('filename', '')
+        key = name.lower()
+        remote_url = r.get('remote_url', '')
+        if key not in entry_index:
+            out_rows.append({
+                'filename': name,
+                'status': 'missing_local_entry',
+                'best_variant': '',
+                'best_prefix_match': '',
+                'best_first_diff': '',
+                'best_len': '',
+                'best_sha256': '',
+                'remote_len': '',
+                'remote_sha256': '',
+                'arc': '',
+                'detail': 'filename not found in provided arc inputs',
+            })
+            continue
+
+        arc_name, data, entry = entry_index[key]
+        raw = data[entry['abs_data_off']:entry['abs_data_off'] + entry['file_size']]
+
+        try:
+            req = urllib.request.Request(remote_url, headers={'User-Agent': 'Mozilla/5.0'})
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                remote = resp.read()
+        except Exception as e:
+            out_rows.append({
+                'filename': name,
+                'status': 'remote_error',
+                'best_variant': '',
+                'best_prefix_match': '',
+                'best_first_diff': '',
+                'best_len': '',
+                'best_sha256': '',
+                'remote_len': '',
+                'remote_sha256': '',
+                'arc': arc_name,
+                'detail': str(e),
+            })
+            continue
+
+        remote_sha = hashlib.sha256(remote).hexdigest()
+        candidates = _candidate_payloads_from_raw(raw)
+        if not candidates:
+            out_rows.append({
+                'filename': name,
+                'status': 'no_candidates',
+                'best_variant': '',
+                'best_prefix_match': '',
+                'best_first_diff': '',
+                'best_len': '',
+                'best_sha256': '',
+                'remote_len': len(remote),
+                'remote_sha256': remote_sha,
+                'arc': arc_name,
+                'detail': '',
+            })
+            continue
+
+        scored = []
+        for variant, payload, digest in candidates:
+            prefix_match, first_diff, exact_match = _score_candidate(payload, remote)
+            scored.append((prefix_match, exact_match, variant, first_diff, len(payload), digest))
+
+        # Highest matching prefix wins; exact match breaks ties, then longer file.
+        scored.sort(key=lambda x: (x[0], 1 if x[1] else 0, x[4]), reverse=True)
+        best = scored[0]
+        status = 'exact_match' if best[1] else 'best_candidate'
+
+        out_rows.append({
+            'filename': name,
+            'status': status,
+            'best_variant': best[2],
+            'best_prefix_match': best[0],
+            'best_first_diff': '' if best[3] is None else best[3],
+            'best_len': best[4],
+            'best_sha256': best[5],
+            'remote_len': len(remote),
+            'remote_sha256': remote_sha,
+            'arc': arc_name,
+            'detail': '',
+        })
+
+        processed += 1
+        if processed % 10 == 0:
+            print(f'  scored {processed}/{len(rows)} mismatches...')
+
+    os.makedirs(os.path.dirname(output_csv) or '.', exist_ok=True)
+    fieldnames = [
+        'filename', 'status', 'best_variant', 'best_prefix_match', 'best_first_diff',
+        'best_len', 'best_sha256', 'remote_len', 'remote_sha256', 'arc', 'detail'
+    ]
+    with open(output_csv, 'w', newline='') as f:
+        w = csv.DictWriter(f, fieldnames=fieldnames)
+        w.writeheader()
+        w.writerows(out_rows)
+
+    exact = sum(1 for r in out_rows if r['status'] == 'exact_match')
+    best_only = sum(1 for r in out_rows if r['status'] == 'best_candidate')
+    errs = sum(1 for r in out_rows if r['status'] in ('remote_error', 'missing_local_entry', 'no_candidates'))
+    print(f'\nProbe scoring complete: exact={exact}, best_candidate={best_only}, errors={errs}')
+    print(f'Wrote: {output_csv}')
+    return 0
 
 
 def _detect_ext(payload):
@@ -514,6 +929,16 @@ def main():
     parser.add_argument('-e', '--ext', action='append',
                         help='Only extract files with this extension (e.g. -e .pdf -e .jpg). '
                              'Default: extract all.')
+    parser.add_argument('--probe-file',
+                        help='Generate decode candidates for one file name (case-insensitive).')
+    parser.add_argument('--probe-output', default='tmp/candidates',
+                        help='Output directory for --probe-file candidates (default: tmp/candidates).')
+    parser.add_argument('--probe-score-csv',
+                        help='Score candidate variants for mismatch rows from a report CSV.')
+    parser.add_argument('--probe-score-output', default='tmp/candidates/probe_score_results.csv',
+                        help='Output CSV path for --probe-score-csv results.')
+    parser.add_argument('--probe-score-limit', type=int,
+                        help='Optional maximum number of mismatch rows to score.')
     args = parser.parse_args()
 
     extensions = None
@@ -537,6 +962,22 @@ def main():
         for arc_path in arc_files:
             list_arc(arc_path, extensions)
         return
+
+    if args.probe_file:
+        sys.exit(probe_file_candidates(
+            arc_files,
+            args.probe_file,
+            args.probe_output,
+            verbose=args.verbose,
+        ))
+
+    if args.probe_score_csv:
+        sys.exit(probe_score_csv(
+            arc_files,
+            args.probe_score_csv,
+            args.probe_score_output,
+            limit=args.probe_score_limit,
+        ))
 
     total_extracted = 0
     total_skipped = 0
