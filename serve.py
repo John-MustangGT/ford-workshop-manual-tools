@@ -31,6 +31,7 @@ EXTRACTED_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'extrac
 # ---------------------------------------------------------------------------
 _file_index: dict[str, str] = {}
 _arc_dirs:   dict[str, str] = {}   # arc name (upper) → arc directory path
+_arc_file_index: dict[str, dict[str, str]] = {}  # arc name (upper) → lower basename → full path
 
 
 def build_index(root: str) -> None:
@@ -38,14 +39,28 @@ def build_index(root: str) -> None:
         arc_dir = os.path.join(root, arc)
         if not os.path.isdir(arc_dir):
             continue
-        _arc_dirs[arc.upper()] = arc_dir
+        arc_upper = arc.upper()
+        _arc_dirs[arc_upper] = arc_dir
+        per_arc: dict[str, str] = {}
         for fname in os.listdir(arc_dir):
-            _file_index[fname.lower()] = os.path.join(arc_dir, fname)
+            full = os.path.join(arc_dir, fname)
+            lower = fname.lower()
+            _file_index[lower] = full
+            per_arc[lower] = full
+        _arc_file_index[arc_upper] = per_arc
 
 
 def find_file(name: str) -> str | None:
     """Return the absolute path for a bare filename, or None."""
     return _file_index.get(name.lower())
+
+
+def find_arc_file(arc: str, name: str) -> str | None:
+    """Return absolute path for filename within an arc, case-insensitively."""
+    arc_map = _arc_file_index.get(arc.upper())
+    if not arc_map:
+        return None
+    return arc_map.get(name.lower())
 
 
 def file_url(full_path: str) -> str:
@@ -324,6 +339,11 @@ class Handler(BaseHTTPRequestHandler):
             candidate = os.path.join(EXTRACTED_DIR, arc, fname)
             if os.path.isfile(candidate):
                 self._serve_file(candidate)
+                return
+            # Arc-local case-insensitive match: /SEB/seb3e008.htm → SEB3E008.HTM
+            arc_match = find_arc_file(arc, fname)
+            if arc_match:
+                self._serve_file(arc_match)
                 return
             # Arc dir exists but file missing → try global index
             if arc in _arc_dirs and fname:
