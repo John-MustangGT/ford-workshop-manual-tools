@@ -214,11 +214,11 @@ def parse_idicomp(raw):
     Returns (payload_bytes, type_flags) or (None, None) if not IDICOMP.
 
     Format: 9-byte magic, then one or more chunks. Each chunk is a 2-byte LE
-    length followed by that many bytes. A zero-length chunk terminates the
-    sequence. Chunks that decompress successfully via LZSS are concatenated;
-    chunks that raise IndexError are appended as raw bytes. This uniformly
-    handles text files (all chunks LZSS), large binary files (all chunks raw,
-    e.g. JPEG/GIF), and mixed files (first chunk LZSS, rest raw, e.g. PDFs).
+    signed integer followed by data bytes. A zero chunk header terminates the
+    sequence. A positive header is the LZSS compressed data size; a negative
+    header encodes a raw (uncompressed) chunk of abs(header) bytes.
+
+    This matches the original C implementation (FUN_0041b0a1 in tsobrowser.exe).
     """
     if len(raw) < 11 or raw[:9] != IDICOMP_MAGIC:
         return None, None
@@ -227,40 +227,23 @@ def parse_idicomp(raw):
 
     pos = 9
     total_out = bytearray()
-    pending_raw = None
 
     while pos + 1 < len(raw):
-        hdr = raw[pos:pos + 2]
         pl = raw[pos] + raw[pos + 1] * 256
         pos += 2
         if pl == 0:
             break
-        chunk = raw[pos:pos + pl]
-        try:
-            decompressed = _decompress_idicomp(chunk)
-            if pending_raw is not None:
-                _mb = _detect_pending_raw_marker_bytes(pending_raw)
-                total_out.extend(_repair_raw_16k_stream_variant(bytes(pending_raw), marker_bytes=_mb, require_tail=False, trim_tail=True))
-                pending_raw = None
-            total_out.extend(decompressed)
-        except IndexError:
-            if not total_out:
-                # Entire entry is raw. Start at byte 11 and repair optional
-                # 16KB inter-block framing markers when present.
-                return _repair_raw_16k_stream_variant(bytes(raw[11:]), marker_bytes=2, require_tail=False, trim_tail=True), type_flags
-            # Mixed entries can continue with multiple raw chunks. Stitch them
-            # into one raw stream so inter-chunk header words stay in place
-            # before removing 16KB framing markers.
-            if pending_raw is None:
-                pending_raw = bytearray(chunk)
-            else:
-                pending_raw.extend(hdr)
-                pending_raw.extend(chunk)
-        pos += pl
-
-    if pending_raw is not None:
-        _mb = _detect_pending_raw_marker_bytes(pending_raw)
-        total_out.extend(_repair_raw_16k_stream_variant(bytes(pending_raw), marker_bytes=_mb, require_tail=False, trim_tail=True))
+        pl_signed = pl if pl < 0x8000 else pl - 0x10000
+        if pl_signed < 0:
+            # Raw chunk: abs(signed value) bytes of uncompressed data.
+            size = -pl_signed
+            total_out.extend(raw[pos:pos + size])
+            pos += size
+        else:
+            # LZSS chunk: decompress and append.
+            chunk = raw[pos:pos + pl]
+            total_out.extend(_decompress_idicomp(chunk))
+            pos += pl
 
     if not total_out:
         return None, None
