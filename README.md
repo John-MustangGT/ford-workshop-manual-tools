@@ -253,3 +253,143 @@ Typical content extracted from a full install:
 | `.wcf` | ~5,600 | Workunit control files (metadata) |
 
 Named arc files correspond to vehicle lines and model years (e.g. `SEB.arc` = S197 Mustang, `SE2.arc` = wiring diagrams, `VIE.arc` = vintage reference images).
+
+---
+
+## Local Viewer Server
+
+Start the local manual viewer:
+
+```bash
+python3 serve.py
+```
+
+Default URL: `http://localhost:8080/`
+
+Direct S197 entry point:
+
+```text
+http://localhost:8080/SEB/SEBALPHAINDEX.HTM
+```
+
+The server also emulates Ford routes used by the extracted HTML:
+
+- `/renderers/2colframeset.asp`
+- `/tpsasps/2colframeset.asp`
+- `/renderers/wiringsvg/ep_main.asp`
+
+---
+
+## Phase 1 Offline Mobile App (PWA)
+
+The repository now includes a browser-based offline app shell in `webapp/`.
+
+### 1) Build the offline catalog
+
+Generate `webapp/offline_catalog.json` from extracted arc directories.
+
+```bash
+# Example: only S197 workshop + wiring
+python3 build_offline_catalog.py --only SEB EEB
+
+# Or index every extracted arc
+python3 build_offline_catalog.py
+```
+
+If you prefer, you can skip this separate step and generate the same catalog
+directly from extraction via `extract_baypod.py --cache-catalog ...`.
+
+### 2) Start the server
+
+```bash
+python3 serve.py
+```
+
+### 3) Open the offline app
+
+```text
+http://localhost:8080/offline_app.html
+```
+
+### 4) Cache books before going offline
+
+In the app:
+
+1. Select an arc (for example `SEB`)
+2. Click **Download Arc For Offline**
+3. Repeat for additional arcs (for example `EEB`)
+4. Open a few important pages while online so dynamic renderer URLs are cached too
+
+### 5) Install on device
+
+- **iPad (Safari)**: Share -> Add to Home Screen
+- **Android (Chrome)**: Install prompt or browser menu -> Install app
+
+### Notes
+
+- This is a Phase 1 PWA implementation designed for local/offline use with your extracted files.
+- iOS may evict cached storage under pressure; verify critical pages before relying on disconnected use.
+
+---
+
+## Obsidian Export Pipeline
+
+Convert one extracted workshop-manual arc (for example `SEB`) into an Obsidian-ready
+bundle with:
+
+- Markdown notes for each `.HTM` page
+- Obsidian wikilinks for internal page navigation
+- Copied arc assets (JPG/GIF/PDF/SVG/PNG)
+- Optional wiring-diagram assets copied from the related EE* arc when referenced
+- Generated section index and alphabetical index notes
+
+### 1) Install dependencies
+
+```bash
+python3 -m pip install beautifulsoup4 markdownify
+```
+
+### 2) Build an Obsidian bundle (SEB example)
+
+```bash
+python3 build_obsidian_section.py --arc SEB
+```
+
+With explicit wiring arc override:
+
+```bash
+python3 build_obsidian_section.py --arc SEB --wiring-arc EEB
+```
+
+Copy all assets from the wiring arc (optional; default is referenced-only):
+
+```bash
+python3 build_obsidian_section.py --arc SEB --wiring-arc EEB --copy-all-wiring-assets
+```
+
+Zip the vault after export for easy cloud/phone transfer:
+
+```bash
+python3 build_obsidian_section.py --arc SEB --zip
+```
+
+This produces `obsidian_export/SEB_YYYYMMDD_HHMMSS.zip` alongside the vault folder.
+
+Default output path:
+
+```text
+obsidian_export/SEB/
+```
+
+Top-level bundle contents:
+
+- `index.md` (root navigation note)
+- `pages/` (all converted procedures)
+- `assets/` (copied referenced images/docs)
+- `indexes/Section Index.md`
+- `indexes/Alphabetical Index.md`
+- `_meta/manifest.json`
+
+### 3) Import into Obsidian
+
+Open `obsidian_export/SEB/` as a vault (or copy its contents into an existing vault).

@@ -18,3 +18,18 @@ tools/
 tmp/
 notes.txt
 volume.enc
+
+# Generated offline cache catalogs (contain extracted file inventories)
+offline_catalog.json
+webapp/offline_catalog.json
+
+# Local Python virtual environments
+.venv/
+venv/
+
+# Generated Obsidian export bundles
+obsidian_export/
+
+# Local work/output directories
+workdirs/
+workdir/
