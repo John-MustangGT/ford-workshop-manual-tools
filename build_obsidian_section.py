@@ -222,6 +222,24 @@ def _clean_html_body(
     for tag in body.find_all(["script", "style", "meta", "link"]):
         tag.decompose()
 
+    # Some source pages place <th> directly under <table> instead of a header <tr>.
+    # markdownify handles those poorly, so wrap direct header cells into a proper row first.
+    for table in body.find_all("table"):
+        direct_header_cells = [
+            child
+            for child in list(table.children)
+            if isinstance(child, Tag) and child.name == "th"
+        ]
+        if direct_header_cells:
+            header_row = soup.new_tag("tr")
+            for th in direct_header_cells:
+                header_row.append(th.extract())
+            first_row = table.find("tr")
+            if first_row:
+                first_row.insert_before(header_row)
+            else:
+                table.insert(0, header_row)
+
     # Ford pages often wrap standalone IMG tags inside <ul>; unwrap for cleaner markdown.
     for ul in body.find_all("ul"):
         non_ws = [c for c in ul.contents if not isinstance(c, NavigableString) or c.strip()]
@@ -285,8 +303,78 @@ def _markdown_from_body(body: Tag) -> str:
         bullets="-",
         strip=["style", "script"],
     )
+    text = _normalize_pipe_tables(text)
     text = re.sub(r"\n{3,}", "\n\n", text).strip()
     return text + "\n"
+
+
+def _normalize_pipe_tables(markdown: str) -> str:
+    """Repair common malformed pipe-table output from legacy HTML."""
+    lines = markdown.splitlines()
+
+    # Split lines where markdownify collapsed "header || first_row" into one line.
+    expanded: list[str] = []
+    for line in lines:
+        stripped = line.strip()
+        if (
+            "||" in stripped
+            and "|" in stripped
+            and not stripped.startswith("|")
+            and stripped.count("|") >= 4
+        ):
+            left, right = stripped.split("||", 1)
+            left = left.strip()
+            right = right.strip()
+            if left:
+                if not left.startswith("|"):
+                    left = "| " + left
+                if not left.endswith("|"):
+                    left = left + " |"
+                expanded.append(left)
+            if right:
+                if not right.startswith("|"):
+                    right = "| " + right
+                if not right.endswith("|"):
+                    right = right + " |"
+                expanded.append(right)
+            continue
+        expanded.append(line)
+
+    sep_re = re.compile(r"^\|\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?$")
+
+    def looks_like_table_row(text: str) -> bool:
+        s = text.strip()
+        return s.startswith("|") and s.count("|") >= 2
+
+    def cell_count(row: str) -> int:
+        s = row.strip()
+        core = s.strip("|")
+        if not core.strip():
+            return 0
+        return len([c for c in core.split("|")])
+
+    fixed: list[str] = []
+    i = 0
+    while i < len(expanded):
+        line = expanded[i]
+        if not looks_like_table_row(line):
+            fixed.append(line)
+            i += 1
+            continue
+
+        block_start = i
+        while i < len(expanded) and looks_like_table_row(expanded[i]):
+            i += 1
+        block = expanded[block_start:i]
+
+        if len(block) >= 2 and not sep_re.match(block[1].strip()):
+            cols = max(cell_count(block[0]), 2)
+            separator = "| " + " | ".join(["---"] * cols) + " |"
+            block.insert(1, separator)
+
+        fixed.extend(block)
+
+    return "\n".join(fixed)
 
 
 def _convert_local_md_links_to_wikilinks(markdown: str) -> str:

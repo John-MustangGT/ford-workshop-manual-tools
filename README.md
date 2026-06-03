@@ -345,6 +345,15 @@ bundle with:
 
 ### 1) Install dependencies
 
+Recommended (local virtual environment):
+
+```bash
+python3 -m venv .venv
+.venv/bin/python -m pip install beautifulsoup4 markdownify
+```
+
+Alternative (system Python):
+
 ```bash
 python3 -m pip install beautifulsoup4 markdownify
 ```
@@ -352,7 +361,7 @@ python3 -m pip install beautifulsoup4 markdownify
 ### 2) Build an Obsidian bundle (SEB example)
 
 ```bash
-python3 build_obsidian_section.py --arc SEB
+.venv/bin/python build_obsidian_section.py --arc SEB
 ```
 
 With explicit wiring arc override:
