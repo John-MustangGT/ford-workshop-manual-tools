@@ -39,6 +39,27 @@ python3 extract_baypod.py content/useni4 -o extracted -e .htm -e .HTM -e .svg
 
 Each `.arc` file extracts into its own subdirectory named after the arc (e.g. `extracted/SEB/`).
 
+## LLM Training Export
+
+If you want a section-level training corpus instead of an Obsidian vault, use:
+
+```bash
+python3 -m pip install 'markitdown[pdf]'
+python3 build_training_data.py --arc SEB
+```
+
+This walks the extracted section directory, converts the document files with MarkItDown, and writes a JSONL corpus plus a manifest under `training_export/<ARC>/`. HTML, PDF, WCF, XML, and TXT files are included by default; use `--extensions` to narrow or expand the set.
+
+## RAG Knowledge Export
+
+For Open WebUI knowledge imports tuned for `Qwen:latest`, use the chunked RAG exporter:
+
+```bash
+python3 build_rag_knowledge.py --arc SEB
+```
+
+This writes overlapping markdown chunks under `rag_export/<ARC>/chunks/` and includes the paired wiring arc when one is known. The default chunk size is `900` words with `120` words of overlap, which keeps repair procedures and diagnostic context together without making the retrieval units too large. Use `--target-words` and `--overlap-words` if you want to retune the chunking.
+
 ---
 
 ## Format Reference

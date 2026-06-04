@@ -29,6 +29,8 @@ venv/
 
 # Generated Obsidian export bundles
 obsidian_export/
+training_export/
+rag_export/
 
 # Local work/output directories
 workdirs/
